@@ -1,0 +1,58 @@
+{
+    "layout": {
+        "flit_size": 256,
+        "header_positions": [0, 1, 62,63,64,65, 126,127,128,129, 190,191,192,193,254,255], 
+        "granule_size": 20,
+        "num_granules": null
+    },
+    "packet_sizes": [80, 272, 72, 264], 
+
+    "test_packets": [
+        {
+            "size": 80,
+            "packet_id": 1
+        },
+        {
+            "size": 272,
+            "packet_id": 2
+        },
+        {
+            "size": 72,
+            "packet_id": 3
+        },
+        {
+            "size": 264,
+            "packet_id": 4
+        }
+
+    ],
+    "test_distributions": [
+        {
+            "distribution": {
+                "80": 10,
+                "272": 10,
+                "72": 10,
+                "264": 10
+            },
+            "name": "Lots of Packets"
+        },
+        {
+            "distribution": {
+                "80": 2,
+                "272": 10,
+                "72": 3,
+                "264": 10
+            },
+            "name": "Many Large Packets"
+        },
+        {
+            "distribution": {
+                "80": 5,
+                "272": 5,
+                "72": 5,
+                "264": 5
+            },
+            "name": "Balanced Distribution"
+        }
+    ]
+}
