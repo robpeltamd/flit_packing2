@@ -1,71 +1,90 @@
-# Flit Packing System
+# Flit Packet Packing System
 
-This Python module implements a system for packing byte packets into granules and flits, visualizing the packing structure, and analyzing packing efficiency. The system is designed to handle various packet sizes and distributions, providing insights into packing efficiency and fragmentation.
+This project implements a flexible flit packing system with support for header/meta/data separation, granule-based packing, and visualization. It is highly configurable via JSON files and supports efficiency analysis and SVG output.
 
 ## Features
 
-- **Packet Packing**: Pack packets into granules and flits based on a configurable layout.
-- **Visualization**: Generate SVG files to visualize the flit structure and packed flits.
-- **Efficiency Analysis**: Analyze packing efficiency over multiple randomizations of packet distributions.
+- **Configurable Flit Layout:** Define flit size, header positions, granule size, and number of granules in a JSON config.
+- **Packet Types:** Support for multiple packet types with customizable header, meta, and data sizes.
+- **Packing Algorithm:** Packs packets into flits and granules, supporting fragmentation and reporting statistics.
+- **Efficiency Analysis:** Analyze packing efficiency over thousands of randomizations.
+- **SVG Visualization:** Generates SVGs showing flit structure and actual packet packing.
+- **CSV Export:** Optionally export all test run statistics to a CSV file.
+- **Command-Line Interface:** Run as a script with arguments for config, output prefix, and CSV export.
 
-## Installation
+## Usage
 
-1. Clone the repository or copy the files to your local machine.
-2. Ensure you have Python 3.6 or higher installed.
-3. Install any required dependencies:
-   ```bash
-   pip install -r requirements.txt
+```bash
+python flit_packer.py --config my_config.json
+python flit_packer.py -c experiment.json -o exp1_
+python flit_packer.py --csv-stats stats.csv
+python flit_packer.py --help
+```
 
-(Note: If requirements.txt is not provided, ensure the standard library modules like dataclasses, xml.etree.ElementTree, and statistics are available.)
+### Arguments
 
-Usage
-Running the Module
-Open a terminal and navigate to the directory containing flit_packer.py.
-Run the script:
-The script will:
-Load the configuration from ualink_over_c2c.json.
-Generate visualizations (flit_structure.svg, example_packing.svg, and test SVG files).
-Print packing statistics and efficiency analysis results to the terminal.
-Customizing Configuration
-Edit the ualink_over_c2c.json file to modify the layout, packet sizes, and test distributions.
-Re-run the script to apply the changes.
-Viewing Visualizations
-Open the generated SVG files (flit_structure.svg, example_packing.svg, etc.) in a web browser or an SVG viewer to explore the flit structure and packing results.
+- `--config`, `-c`: Path to configuration JSON file (default: `flit_config.json`)
+- `--output-prefix`, `-o`: Prefix for output SVG files (default: none)
+- `--csv-stats`: Output CSV file for test run statistics
 
-Example Output
-After running the script, you will see output like:
-Flit Packing System with Granules
-==================================================
-Configuration loaded from: ualink_over_c2c.json
-Flit size: 256 bytes
-Header positions: [0, 64, 128, 192]
-Granule size: 20 bytes
-Granules per flit: 12
-Available data regions: [(1, 64), (65, 128), (129, 192), (193, 256)]
-Total data capacity per flit: 240 bytes
-Data efficiency: 93.8%
-Granule capacity per flit: 240 bytes
+## Configuration
 
-Example Packing Results:
-Total packets: 4
-Total packet bytes: 688
-Flits generated: 3
-Full flits analyzed for efficiency: 2
-Granules generated: 36
-Flit efficiency (full flits only): 91.67%
-Granule efficiency (full flits only): 91.67%
-Fragmented packets: 1
-Total waste bytes: 32
-Wasted granule bytes: 32
+Edit or create a JSON config file (see `flit_config.json` for an example):
 
-Generated Files
-flit_structure.svg: Basic flit layout showing headers and granule regions.
-example_packing.svg: Example packet packing demonstration.
-test_1_packing.svg: Visualization for "Many Small Packets" test distribution.
-test_2_packing.svg: Visualization for "Many Large Packets" test distribution.
-test_3_packing.svg: Visualization for "Balanced Distribution" test distribution.
-License
-This module is provided under the MIT License. Feel free to use, modify, and distribute it.
+```json
+{
+  "layout": {
+    "flit_size": 256,
+    "header_positions": [0, 64, 128, 192],
+    "granule_size": 20,
+    "num_granules": null
+  },
+  "packet_types": {
+    "small_control": {
+      "name": "Small Control",
+      "header_size": 4,
+      "meta_size": 2,
+      "data_size": 10
+    },
+    ...
+  },
+  "test_packets": [
+    {"type": "medium_data", "packet_id": 1},
+    ...
+  ],
+  "test_distributions": [
+    {
+      "distribution": {"small_control": 10, "medium_data": 5, ...},
+      "name": "Many Small Packets"
+    },
+    ...
+  ]
+}
+```
 
-Support
-For questions or issues, please contact the author or open an issue in the repository.
+## Output
+
+- **SVG Files:** Visualizations of flit structure and example/test packings.
+- **CSV File:** (Optional) All test run statistics for further analysis.
+
+## Example
+
+```bash
+python flit_packer.py --config flit_config.json --output-prefix results_ --csv-stats all_stats.csv
+```
+
+This will generate SVG visualizations and a CSV file with statistics in the current directory.
+
+## Requirements
+
+- Python 3.7+
+- No external dependencies (uses standard library)
+
+## Customization
+
+- Edit the config file to change flit layout, packet types, or test distributions.
+- Add new packet types or distributions as needed.
+
+## License
+
+MIT License

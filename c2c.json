@@ -1,0 +1,113 @@
+{
+    "layout": {
+        "flit_size": 256,
+        "header_positions": [0, 1, 62,63,64,65, 126,127,128,129, 190,191,192,193,254,255],
+        "granule_size": 20,
+        "num_granules": null
+    },
+    "packet_types": {
+        "Request_256B": {
+            "name": "Request_256B",
+            "header_size": 16,
+            "meta_size": 4,
+            "data_size": 256
+        },
+        "Response_256B": {
+            "name": "Response_256B",
+            "header_size": 8,
+            "meta_size": 4,
+            "data_size": 256
+        },
+        "Request_128B": {
+            "name": "Request_128B",
+            "header_size": 16,
+            "meta_size": 4,
+            "data_size": 128
+        },
+        "Response_128B": {
+            "name": "Response_128B",
+            "header_size": 16,
+            "meta_size": 4,
+            "data_size": 128
+        },
+            "Flow_control": {
+            "name": "Flow_control",
+            "header_size": 4,
+            "meta_size": 4,
+            "data_size": 0
+        }
+    },
+    "test_packets": [
+        {
+            "type": "Request_256B",
+            "packet_id": 1
+        },
+        {
+            "type": "Response_256B",
+            "packet_id": 2
+        },
+        {
+            "type": "Request_128B",
+            "packet_id": 3
+        },
+        {
+            "type": "Response_128B",
+            "packet_id": 4
+        },
+        {
+            "type": "Flow_control",
+            "packet_id": 5
+        }    ],
+    "test_distributions": [
+        {
+            "distribution": {
+                "Request_256B": 30,
+                "Response_256B": 0,
+                "Request_128B": 0,
+                "Response_128B": 0,
+                "Flow_control": 0
+            },
+            "name": "All writes"
+        },
+        {
+            "distribution": {
+                "Request_256B": 0,
+                "Response_256B": 30,
+                "Request_128B": 0,
+                "Response_128B": 0,
+                "Flow_control": 0
+            },
+            "name": "All reads"
+        },
+        {
+            "distribution": {
+                "Request_256B": 15,
+                "Response_256B": 15,
+                "Request_128B": 0,
+                "Response_128B": 0,
+                "Flow_control": 0
+            },
+            "name": "Mixed writes"
+        },
+        {
+            "distribution": {
+                "Request_256B": 0,
+                "Response_256B": 0,
+                "Request_128B": 15,
+                "Response_128B": 15,
+                "Flow_control": 0
+            },
+            "name": "Mixed reads"
+        },
+        {
+            "distribution": {
+                "Request_256B": 30,
+                "Response_256B": 30,
+                "Request_128B": 0,
+                "Response_128B": 0,
+                "Flow_control": 30
+            },
+            "name": "Mixed 256B with flow control"
+        }
+    ]
+}

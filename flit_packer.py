@@ -1,148 +1,34 @@
+# flit_packer.py - MAIN FILE
+#!/usr/bin/env python3
+"""
+Flit Packet Packing System with Header-Meta-Data Support
+
+This is the main file for the flit packing system.
+It imports all the necessary classes and provides the main entry point.
+
+Usage:
+    python flit_packer.py --config my_config.json
+    python flit_packer.py -c experiment.json -o exp1_
+    python flit_packer.py --help
+"""
+
 import random
 import statistics
-from dataclasses import dataclass
-from typing import List, Tuple, Dict
-import xml.etree.ElementTree as ET
+import argparse
+import sys
 import json
 import os
-import sys
+import csv
+from typing import List, Tuple, Dict
+import xml.etree.ElementTree as ET
 
-@dataclass
-class Packet:
-    """Represents a byte packet with size and ID"""
-    size: int
-    packet_id: int
-    data: bytes = None
-    
-    def __post_init__(self):
-        if self.data is None:
-            self.data = bytes([self.packet_id % 256] * self.size)
-
-@dataclass
-class Granule:
-    """Represents a granule within a flit"""
-    granule_id: int
-    size: int
-    flit_id: int
-    packet_id: int = None  # Which packet this granule belongs to
-    bytes_used: int = 0
-    data: bytes = None
-    
-    def __post_init__(self):
-        if self.data is None:
-            self.data = bytearray(self.size)
-    
-    def can_fit_packet_data(self, packet_size: int) -> bool:
-        """Check if packet data can fit in this granule"""
-        return self.bytes_used + packet_size <= self.size and self.packet_id is None
-    
-    def add_packet_data(self, packet: Packet, data_size: int) -> int:
-        """Add packet data to granule, returns bytes actually added"""
-        if self.packet_id is not None and self.packet_id != packet.packet_id:
-            return 0  # Cannot mix packets in same granule
-        
-        available_space = self.size - self.bytes_used
-        bytes_to_add = min(data_size, available_space)
-        
-        if bytes_to_add > 0:
-            self.packet_id = packet.packet_id
-            # Fill with packet data pattern
-            for i in range(bytes_to_add):
-                self.data[self.bytes_used + i] = packet.packet_id % 256
-            self.bytes_used += bytes_to_add
-        
-        return bytes_to_add
-
-@dataclass
-class FlitLayout:
-    """Defines the flit structure with header positions and granules"""
-    flit_size: int = 256
-    header_positions: List[int] = None
-    granule_size: int = 20
-    num_granules: int = None
-    
-    def __post_init__(self):
-        if self.header_positions is None:
-            # Default header positions: bytes 0, 64, 128, 192
-            self.header_positions = [0, 64, 128, 192]
-        
-        # Calculate data capacity
-        self.total_header_bytes = len(self.header_positions)
-        self.data_capacity = self.flit_size - self.total_header_bytes
-        
-        # Set default number of granules if not specified
-        if self.num_granules is None:
-            self.num_granules = self.data_capacity // self.granule_size
-        
-        # Validate granule configuration
-        self._validate_granule_config()
-    
-    def _validate_granule_config(self):
-        """Validate that granule configuration is valid"""
-        required_data_bytes = self.num_granules * self.granule_size
-        
-        if required_data_bytes > self.data_capacity:
-            raise ValueError(
-                f"Granule configuration invalid: {self.num_granules} granules × "
-                f"{self.granule_size} bytes = {required_data_bytes} bytes, "
-                f"but only {self.data_capacity} data bytes available "
-                f"({self.flit_size} - {self.total_header_bytes} headers)"
-            )
-        
-        if required_data_bytes != self.data_capacity:
-            print(f"Warning: Granules use {required_data_bytes} bytes, "
-                  f"leaving {self.data_capacity - required_data_bytes} bytes unused per flit")
-    
-    def get_available_positions(self) -> List[Tuple[int, int]]:
-        """Returns list of (start, end) tuples for available data regions"""
-        positions = []
-        headers = sorted(self.header_positions)
-        
-        start = 0
-        for header_pos in headers:
-            if start < header_pos:
-                positions.append((start, header_pos))
-            start = header_pos + 1
-        
-        # Add final segment if there's space after last header
-        if start < self.flit_size:
-            positions.append((start, self.flit_size))
-            
-        return positions
-    
-    def get_granule_layout(self) -> List[Tuple[int, int, int]]:
-        """Returns list of (start, end, granule_id) byte positions for each granule"""
-        available_regions = self.get_available_positions()
-        granule_positions = []
-        
-        current_granule = 0
-        granule_start_byte = 0
-        
-        for region_start, region_end in available_regions:
-            region_pos = region_start
-            
-            while region_pos < region_end and current_granule < self.num_granules:
-                # Calculate how much of current granule fits in this region
-                granule_bytes_placed = granule_start_byte
-                granule_bytes_remaining = self.granule_size - granule_bytes_placed
-                region_bytes_available = region_end - region_pos
-                
-                bytes_to_place = min(granule_bytes_remaining, region_bytes_available)
-                
-                granule_positions.append((region_pos, region_pos + bytes_to_place, current_granule))
-                
-                granule_start_byte += bytes_to_place
-                region_pos += bytes_to_place
-                
-                # Check if granule is complete
-                if granule_start_byte >= self.granule_size:
-                    current_granule += 1
-                    granule_start_byte = 0
-        
-        return granule_positions
+from packet import Packet
+from granule import Granule
+from flit_layout import FlitLayout
+from utils import load_configuration, create_packet_from_type
 
 class FlitPacker:
-    """Handles packing of packets into granules and flits"""
+    """Handles packing of packets into granules and flits with header/meta/data separation"""
     
     def __init__(self, layout: FlitLayout, packet_sizes: List[int]):
         self.layout = layout
@@ -153,25 +39,41 @@ class FlitPacker:
         self.granules_per_flit = layout.num_granules
         self.granule_size = layout.granule_size
     
-    def pack_packets(self, packets: List[Packet]) -> Tuple[List[bytes], List[List[Granule]], Dict]:
-        """Pack packets into granules and flits, return flits, granules, and statistics"""
-        flits = []
-        all_granules = []  # List of lists, each containing granules for one flit
-        current_flit = bytearray(self.layout.flit_size)
-        current_granules = []
+    def _start_new_flit(self) -> Tuple[bytearray, List[Granule]]:
+        """Start a new flit and return flit bytearray and granules list"""
+        new_flit = bytearray(self.layout.flit_size)
         
-        # Initialize headers (using 0xFF as header marker)
+        # Initialize flit headers (using 0xFF as header marker)
         for pos in self.layout.header_positions:
-            current_flit[pos] = 0xFF
+            new_flit[pos] = 0xFF
         
-        # Create initial set of granules for first flit
+        # Create new granules (all start as data type)
+        new_granules = []
         for i in range(self.granules_per_flit):
             granule = Granule(
                 granule_id=i,
                 size=self.granule_size,
-                flit_id=len(flits)
+                flit_id=0,  # Will be updated when added to flits list
+                granule_type="data"
             )
-            current_granules.append(granule)
+            new_granules.append(granule)
+        
+        return new_flit, new_granules
+    
+    def _finish_current_flit(self, current_flit: bytearray, current_granules: List[Granule], 
+                            flits: List[bytes], all_granules: List[List[Granule]]):
+        """Finish current flit and add to collections"""
+        self._place_granules_in_flit(current_flit, current_granules)
+        flits.append(bytes(current_flit))
+        all_granules.append(current_granules)
+    
+    def pack_packets(self, packets: List[Packet]) -> Tuple[List[bytes], List[List[Granule]], Dict]:
+        """Pack packets into granules and flits with header/meta/data separation"""
+        flits = []
+        all_granules = []
+        
+        # Create initial set of granules for first flit
+        current_flit, current_granules = self._start_new_flit()
         
         total_packet_bytes = sum(p.size for p in packets)
         packed_bytes = 0
@@ -192,78 +94,162 @@ class FlitPacker:
         }
         
         for packet in packets:
-            remaining_packet_size = packet.size
+            # Pack header, meta, data (must be in consecutive granules)
+            remaining_header_size = packet.header_size if hasattr(packet, 'header_size') else 0
+            remaining_meta_size = packet.meta_size if hasattr(packet, 'meta_size') else 0
+            remaining_data_size = packet.data_size if hasattr(packet, 'data_size') else packet.size
             packet_fragmented = False
             
-            while remaining_packet_size > 0:
-                # Find a granule that can fit some of this packet
-                granule_found = False
+            # Find available consecutive granules (header + meta + data)
+            header_granule_idx = None
+            meta_granule_idx = None
+            data_granule_idx = None
+            
+            # Determine how many consecutive granules we need
+            granules_needed = 0
+            if remaining_header_size > 0:
+                granules_needed += 1
+            if remaining_meta_size > 0:
+                granules_needed += 1
+            if remaining_data_size > 0:
+                granules_needed += 1
+            
+            # Look for available consecutive granules
+            if granules_needed > 0:
+                for i in range(len(current_granules) - granules_needed + 1):
+                    # Check if we have enough consecutive available granules
+                    available_consecutive = True
+                    for j in range(granules_needed):
+                        if current_granules[i + j].packet_id is not None:
+                            available_consecutive = False
+                            break
+                    
+                    if available_consecutive:
+                        # Check size constraints
+                        valid_sizes = True
+                        granule_idx = i
+                        
+                        if remaining_header_size > 0:
+                            if current_granules[granule_idx].size < remaining_header_size:
+                                valid_sizes = False
+                            else:
+                                header_granule_idx = granule_idx
+                                granule_idx += 1
+                        
+                        if remaining_meta_size > 0 and valid_sizes:
+                            if current_granules[granule_idx].size < remaining_meta_size:
+                                valid_sizes = False
+                            else:
+                                meta_granule_idx = granule_idx
+                                granule_idx += 1
+                        
+                        if remaining_data_size > 0 and valid_sizes:
+                            data_granule_idx = granule_idx
+                        
+                        if valid_sizes:
+                            # Set granule types
+                            if header_granule_idx is not None:
+                                current_granules[header_granule_idx].granule_type = "header"
+                            if meta_granule_idx is not None:
+                                current_granules[meta_granule_idx].granule_type = "meta"
+                            if data_granule_idx is not None:
+                                current_granules[data_granule_idx].granule_type = "data"
+                            break
+                        else:
+                            # Reset for next iteration
+                            header_granule_idx = None
+                            meta_granule_idx = None
+                            data_granule_idx = None
                 
-                for granule in current_granules:
-                    if granule.packet_id is None or granule.packet_id == packet.packet_id:
-                        # Check if we can add data to this granule
-                        available_in_granule = granule.size - granule.bytes_used
-                        if available_in_granule > 0:
-                            bytes_added = granule.add_packet_data(packet, remaining_packet_size)
-                            if bytes_added > 0:
-                                remaining_packet_size -= bytes_added
-                                packed_bytes += bytes_added
-                                granule_found = True
-                                break
-                
-                if not granule_found:
-                    # No suitable granule found, need a new flit
+                # If no consecutive granules found, need new flit
+                if (remaining_header_size > 0 and header_granule_idx is None) or \
+                   (remaining_meta_size > 0 and meta_granule_idx is None) or \
+                   (remaining_data_size > 0 and data_granule_idx is None):
                     
-                    # Calculate wasted bytes in current granules
-                    for granule in current_granules:
-                        wasted_granule_bytes += granule.size - granule.bytes_used
-                    
-                    # Place granules into current flit
-                    self._place_granules_in_flit(current_flit, current_granules)
-                    
-                    # Save current flit
-                    flits.append(bytes(current_flit))
-                    all_granules.append(current_granules)
+                    self._finish_current_flit(current_flit, current_granules, flits, all_granules)
+                    wasted_granule_bytes += sum(g.size - g.bytes_used for g in current_granules)
                     
                     # Start new flit
-                    current_flit = bytearray(self.layout.flit_size)
-                    current_granules = []
+                    current_flit, current_granules = self._start_new_flit()
                     
-                    # Initialize headers
-                    for pos in self.layout.header_positions:
-                        current_flit[pos] = 0xFF
-                    
-                    # Create new granules
-                    for i in range(self.granules_per_flit):
-                        granule = Granule(
-                            granule_id=i,
-                            size=self.granule_size,
-                            flit_id=len(flits)
-                        )
-                        current_granules.append(granule)
-                    
-                    if remaining_packet_size > 0:
+                    # Use first granules for header + meta + data
+                    if len(current_granules) >= granules_needed:
+                        granule_idx = 0
+                        if remaining_header_size > 0:
+                            current_granules[granule_idx].granule_type = "header"
+                            header_granule_idx = granule_idx
+                            granule_idx += 1
+                        if remaining_meta_size > 0:
+                            current_granules[granule_idx].granule_type = "meta"
+                            meta_granule_idx = granule_idx
+                            granule_idx += 1
+                        if remaining_data_size > 0:
+                            current_granules[granule_idx].granule_type = "data"
+                            data_granule_idx = granule_idx
+                        
                         packet_fragmented = True
+            
+            # Pack header if present
+            if remaining_header_size > 0 and header_granule_idx is not None:
+                header_granule = current_granules[header_granule_idx]
+                bytes_added = header_granule.add_packet_data(packet, remaining_header_size, "header")
+                remaining_header_size -= bytes_added
+                packed_bytes += bytes_added
                 
-                # Safety check to prevent infinite loop
-                if remaining_packet_size > 0 and not granule_found and not current_granules:
-                    print(f"Warning: Cannot place packet {packet.packet_id} of size {remaining_packet_size}")
-                    break
+                if remaining_header_size > 0:
+                    print(f"Warning: Packet {packet.packet_id} header ({packet.header_size}B) too large for granule ({self.granule_size}B)")
+            
+            # Pack metadata if present
+            if remaining_meta_size > 0 and meta_granule_idx is not None:
+                meta_granule = current_granules[meta_granule_idx]
+                bytes_added = meta_granule.add_packet_data(packet, remaining_meta_size, "meta")
+                remaining_meta_size -= bytes_added
+                packed_bytes += bytes_added
+                
+                if remaining_meta_size > 0:
+                    print(f"Warning: Packet {packet.packet_id} metadata ({packet.meta_size}B) too large for granule ({self.granule_size}B)")
+            
+            # Pack data
+            while remaining_data_size > 0:
+                if data_granule_idx is not None and data_granule_idx < len(current_granules):
+                    data_granule = current_granules[data_granule_idx]
+                    bytes_added = data_granule.add_packet_data(packet, remaining_data_size, "data")
+                    remaining_data_size -= bytes_added
+                    packed_bytes += bytes_added
+                
+                # If more data remains, look for next available data granule
+                if remaining_data_size > 0:
+                    next_data_granule_idx = None
+                    for i in range(data_granule_idx + 1, len(current_granules)):
+                        granule = current_granules[i]
+                        if granule.packet_id is None:
+                            granule.granule_type = "data"
+                            next_data_granule_idx = i
+                            break
+                    
+                    if next_data_granule_idx is not None:
+                        data_granule_idx = next_data_granule_idx
+                    else:
+                        # Need new flit for remaining data
+                        self._finish_current_flit(current_flit, current_granules, flits, all_granules)
+                        wasted_granule_bytes += sum(g.size - g.bytes_used for g in current_granules)
+                        
+                        current_flit, current_granules = self._start_new_flit()
+                        current_granules[0].granule_type = "data"
+                        data_granule_idx = 0
+                        packet_fragmented = True
             
             if packet_fragmented:
                 fragmented_packets += 1
         
         # Handle the last flit if it has data
         if any(g.bytes_used > 0 for g in current_granules):
-            # Calculate wasted bytes in final granules
             for granule in current_granules:
                 wasted_granule_bytes += granule.size - granule.bytes_used
             
-            self._place_granules_in_flit(current_flit, current_granules)
-            flits.append(bytes(current_flit))
-            all_granules.append(current_granules)
+            self._finish_current_flit(current_flit, current_granules, flits, all_granules)
         
-        # Calculate statistics (excluding the last flit from efficiency calculations)
+        # Calculate statistics
         stats['total_flits'] = len(flits)
         stats['total_granules'] = len(flits) * self.granules_per_flit
         stats['packed_bytes'] = packed_bytes
@@ -274,28 +260,45 @@ class FlitPacker:
         flits_for_efficiency = max(0, len(flits) - 1) if len(flits) > 1 else 0
         granules_for_efficiency = flits_for_efficiency * self.granules_per_flit
         
-        total_capacity_for_efficiency = flits_for_efficiency * self.total_data_capacity
+        # Calculate capacities for efficiency metrics
+        total_data_capacity_for_efficiency = flits_for_efficiency * self.total_data_capacity
         total_granule_capacity_for_efficiency = granules_for_efficiency * self.granule_size
+        total_flit_capacity_for_efficiency = flits_for_efficiency * self.layout.flit_size
         
         # Calculate efficiency based on full flits only
-        if total_capacity_for_efficiency > 0 and flits_for_efficiency > 0:
-            # Calculate packed bytes in full flits only (exclude last flit's contribution)
+        if flits_for_efficiency > 0:
             if len(flits) > 1:
-                # Estimate packed bytes in the last flit
                 last_flit_granules = all_granules[-1] if all_granules else []
                 last_flit_packed_bytes = sum(g.bytes_used for g in last_flit_granules)
                 packed_bytes_full_flits = packed_bytes - last_flit_packed_bytes
                 
-                stats['efficiency'] = (packed_bytes_full_flits / total_capacity_for_efficiency * 100)
-                stats['granule_efficiency'] = (packed_bytes_full_flits / total_granule_capacity_for_efficiency * 100)
+                header_bytes_full_flits = flits_for_efficiency * len(self.layout.header_positions)
+                
+                stats['data_efficiency'] = (packed_bytes_full_flits / total_data_capacity_for_efficiency * 100) if total_data_capacity_for_efficiency > 0 else 0.0
+                stats['granule_efficiency'] = (packed_bytes_full_flits / total_granule_capacity_for_efficiency * 100) if total_granule_capacity_for_efficiency > 0 else 0.0
+                stats['overall_efficiency'] = ((packed_bytes_full_flits + header_bytes_full_flits) / total_flit_capacity_for_efficiency * 100) if total_flit_capacity_for_efficiency > 0 else 0.0
+                stats['efficiency'] = stats['data_efficiency']
             else:
-                stats['efficiency'] = 0.0
-                stats['granule_efficiency'] = 0.0
+                header_bytes_single_flit = len(self.layout.header_positions)
+                
+                stats['data_efficiency'] = (packed_bytes / self.total_data_capacity * 100) if self.total_data_capacity > 0 else 0.0
+                stats['granule_efficiency'] = (packed_bytes / (self.granules_per_flit * self.granule_size) * 100) if (self.granules_per_flit * self.granule_size) > 0 else 0.0
+                stats['overall_efficiency'] = ((packed_bytes + header_bytes_single_flit) / self.layout.flit_size * 100) if self.layout.flit_size > 0 else 0.0
+                stats['efficiency'] = stats['data_efficiency']
         else:
-            stats['efficiency'] = 0.0
-            stats['granule_efficiency'] = 0.0
+            if len(flits) == 1:
+                header_bytes_single_flit = len(self.layout.header_positions)
+                
+                stats['data_efficiency'] = (packed_bytes / self.total_data_capacity * 100) if self.total_data_capacity > 0 else 0.0
+                stats['granule_efficiency'] = (packed_bytes / (self.granules_per_flit * self.granule_size) * 100) if (self.granules_per_flit * self.granule_size) > 0 else 0.0
+                stats['overall_efficiency'] = ((packed_bytes + header_bytes_single_flit) / self.layout.flit_size * 100) if self.layout.flit_size > 0 else 0.0
+                stats['efficiency'] = stats['data_efficiency']
+            else:
+                stats['data_efficiency'] = 0.0
+                stats['granule_efficiency'] = 0.0
+                stats['overall_efficiency'] = 0.0
+                stats['efficiency'] = 0.0
         
-        # Total waste includes all flits
         total_capacity = len(flits) * self.total_data_capacity
         stats['waste_bytes'] = total_capacity - packed_bytes
         stats['full_flits_analyzed'] = flits_for_efficiency
@@ -310,7 +313,6 @@ class FlitPacker:
             if granule_idx >= self.granules_per_flit:
                 break
             
-            # Find all byte positions for this granule
             granule_byte_positions = [pos for pos in granule_positions if pos[2] == granule_idx]
             
             data_idx = 0
@@ -327,24 +329,47 @@ class FlitPacker:
 class PackingAnalyzer:
     """Analyzes packing efficiency over multiple randomizations"""
     
-    def __init__(self, packer: FlitPacker):
+    def __init__(self, packer: FlitPacker, packet_types: Dict = None):
         self.packer = packer
+        self.packet_types = packet_types or {}
     
     def analyze_efficiency(self, packet_counts: Dict[int, int], num_iterations: int = 1000) -> Dict:
         """Analyze packing efficiency over multiple random packet orderings"""
         efficiencies = []
         granule_efficiencies = []
+        overall_efficiencies = []
         flit_counts = []
         fragmentation_rates = []
         
         for _ in range(num_iterations):
-            # Generate random packet sequence
+            # Generate random packet sequence using proper packet types
             packets = []
             packet_id = 0
             
             for size, count in packet_counts.items():
                 for _ in range(count):
-                    packets.append(Packet(size, packet_id))
+                    # Find the packet type that matches this size
+                    packet_type_info = None
+                    for type_name, type_data in self.packet_types.items():
+                        if type_data["header_size"] + type_data["meta_size"] + type_data["data_size"] == size:
+                            packet_type_info = type_data
+                            break
+                    
+                    if packet_type_info:
+                        # Create packet with header/meta/data info
+                        packet = Packet(
+                            size=size,
+                            packet_id=packet_id,
+                            name=packet_type_info["name"],
+                            header_size=packet_type_info["header_size"],
+                            meta_size=packet_type_info["meta_size"],
+                            data_size=packet_type_info["data_size"]
+                        )
+                    else:
+                        # Fallback to basic packet
+                        packet = Packet(size, packet_id)
+                    
+                    packets.append(packet)
                     packet_id += 1
             
             # Randomize order
@@ -353,8 +378,9 @@ class PackingAnalyzer:
             # Pack and analyze
             flits, granules, stats = self.packer.pack_packets(packets)
             
-            efficiencies.append(stats['efficiency'])
+            efficiencies.append(stats['data_efficiency'])
             granule_efficiencies.append(stats['granule_efficiency'])
+            overall_efficiencies.append(stats['overall_efficiency'])
             flit_counts.append(stats['total_flits'])
             
             total_packets = len(packets)
@@ -368,6 +394,10 @@ class PackingAnalyzer:
             'efficiency_max': max(efficiencies),
             'granule_efficiency_mean': statistics.mean(granule_efficiencies),
             'granule_efficiency_std': statistics.stdev(granule_efficiencies) if len(granule_efficiencies) > 1 else 0,
+            'overall_efficiency_mean': statistics.mean(overall_efficiencies),
+            'overall_efficiency_std': statistics.stdev(overall_efficiencies) if len(overall_efficiencies) > 1 else 0,
+            'overall_efficiency_min': min(overall_efficiencies),
+            'overall_efficiency_max': max(overall_efficiencies),
             'flit_count_mean': statistics.mean(flit_counts),
             'flit_count_std': statistics.stdev(flit_counts) if len(flit_counts) > 1 else 0,
             'fragmentation_rate_mean': statistics.mean(fragmentation_rates),
@@ -387,7 +417,7 @@ class FlitVisualizer:
             '#00b894', '#00cec9', '#74b9ff', '#0984e3', '#6c5ce7'
         ]
     
-    def create_structure_svg(self, width: int = 2000, height: int = 4000) -> str:
+    def create_structure_svg(self, width: int = 2000, height: int = 400) -> str:
         """Create SVG visualization of flit structure with granules"""
         
         # Calculate dimensions - 64 bytes per row
@@ -509,8 +539,7 @@ class FlitVisualizer:
         info_y += 40
         
         return ET.tostring(svg, encoding='unicode')
-
-  
+    
     def create_packed_flits_svg(self, flits: List[bytes], granules_list: List[List[Granule]], 
                                packets: List[Packet], stats: Dict, test_name: str = "", 
                                width: int = 2000, height: int = None) -> str:
@@ -526,7 +555,7 @@ class FlitVisualizer:
         # Calculate height based on number of flits
         if height is None:
             rows_per_flit = (self.layout.flit_size + bytes_per_row - 1) // bytes_per_row
-            height = title_height + len(flits) * (rows_per_flit * cell_height + flit_spacing) + 4000  # Added more padding
+            height = title_height + len(flits) * (rows_per_flit * cell_height + flit_spacing) + 400  # Added more padding
         
         # Create SVG root
         svg = ET.Element('svg', {
@@ -573,7 +602,17 @@ class FlitVisualizer:
             'class': 'stats',
             'text-anchor': 'middle'
         })
-        stats_text.text = f"Flit Efficiency: {stats['efficiency']:.1f}% | Granule Efficiency: {stats['granule_efficiency']:.1f}% | Flits: {stats['total_flits']} ({stats.get('full_flits_analyzed', 0)} analyzed) | Fragmented: {stats['fragmented_packets']} packets"
+        stats_text.text = f"Data Eff: {stats['data_efficiency']:.1f}% | Granule Eff: {stats['granule_efficiency']:.1f}% | Overall Eff: {stats['overall_efficiency']:.1f}% | Flits: {stats['total_flits']} ({stats.get('full_flits_analyzed', 0)} analyzed) | Fragmented: {stats['fragmented_packets']} packets"
+        
+        # Configuration info
+        config_y = stats_y + 20
+        config_text = ET.SubElement(svg, 'text', {
+            'x': str(width // 2),
+            'y': str(config_y),
+            'class': 'legend',
+            'text-anchor': 'middle'
+        })
+        config_text.text = f"Granule size: {self.layout.granule_size}B | Granules per flit: {self.layout.num_granules} | Headers: {len(self.layout.header_positions)}"
         
         # Draw each flit
         current_y = title_height
@@ -611,8 +650,10 @@ class FlitVisualizer:
             # Create granule usage mapping
             granule_usage = {}
             granule_packets = {}
+            granule_types = {}
             for granule in flit_granules:
                 granule_usage[granule.granule_id] = granule.bytes_used
+                granule_types[granule.granule_id] = granule.granule_type
                 if granule.packet_id is not None:
                     granule_packets[granule.granule_id] = granule.packet_id
             
@@ -648,16 +689,30 @@ class FlitVisualizer:
                     cell_text = 'H'
                 elif byte_idx in byte_to_granule_status:
                     status, granule_id = byte_to_granule_status[byte_idx]
+                    granule_type = granule_types.get(granule_id, "data")
+                    
                     if status == 'used' and granule_id in granule_packets:
                         packet_id = granule_packets[granule_id]
-                        cell_class = f'packet{packet_id % len(self.packet_colors)}'
-                        cell_text = str(packet_id)
+                        if granule_type == "header":
+                            cell_class = f'packet{packet_id % len(self.packet_colors)}'
+                            cell_text = f'H{packet_id}'
+                        elif granule_type == "meta":
+                            cell_class = f'packet{packet_id % len(self.packet_colors)}'
+                            cell_text = f'M{packet_id}'
+                        else:
+                            cell_class = f'packet{packet_id % len(self.packet_colors)}'
+                            cell_text = str(packet_id)
                     elif status == 'unused':
                         cell_class = 'unused-granule'
                         cell_text = 'U'
                     else:
                         cell_class = 'empty'
-                        cell_text = str(granule_id)
+                        if granule_type == "header":
+                            cell_text = f'H{granule_id}'
+                        elif granule_type == "meta":
+                            cell_text = f'M{granule_id}'
+                        else:
+                            cell_text = str(granule_id)
                 elif byte_idx in byte_to_granule:
                     granule_id = byte_to_granule[byte_idx]
                     cell_class = 'empty'
@@ -714,16 +769,32 @@ class FlitVisualizer:
         })
         header_text.text = 'Headers'
         
-        # Unused granule space legend
-        unused_rect = ET.SubElement(svg, 'rect', {
+        # Header granule legend
+        header_granule_rect = ET.SubElement(svg, 'rect', {
             'x': str(margin + 100),
+            'y': str(legend_y - 8),
+            'width': '12',
+            'height': '10',
+            'class': 'packet0'
+        })
+        header_granule_text = ET.SubElement(svg, 'text', {
+            'x': str(margin + 118),
+            'y': str(legend_y),
+            'class': 'legend'
+        })
+        header_granule_text.text = 'Header granules (H#)'
+        
+        # Unused granule space legend
+        legend_y += 20
+        unused_rect = ET.SubElement(svg, 'rect', {
+            'x': str(margin),
             'y': str(legend_y - 8),
             'width': '12',
             'height': '10',
             'class': 'unused-granule'
         })
         unused_text = ET.SubElement(svg, 'text', {
-            'x': str(margin + 118),
+            'x': str(margin + 18),
             'y': str(legend_y),
             'class': 'legend'
         })
@@ -764,76 +835,96 @@ class FlitVisualizer:
                 'y': str(legend_y),
                 'class': 'legend'
             })
-            packet_text.text = f'P{packet.packet_id}({packet.size}B)'
+            if hasattr(packet, 'name') and packet.name:
+                packet_text.text = f'P{packet.packet_id}: {packet.name} ({packet.size}B)'
+            else:
+                packet_text.text = f'P{packet.packet_id}({packet.size}B)'
             
             col_count += 1
+        # Meta granule legend
+        meta_granule_rect = ET.SubElement(svg, 'rect', {
+            'x': str(margin + 250),
+            'y': str(legend_y - 8),
+            'width': '12',
+            'height': '10',
+            'class': 'packet1'
+        })
+        meta_granule_text = ET.SubElement(svg, 'text', {
+            'x': str(margin + 268),
+            'y': str(legend_y),
+            'class': 'legend'
+        })
+        meta_granule_text.text = 'Meta granules (M#)'
+        
+        # Unused granule space legend
+        legend_y += 20
+        unused_rect = ET.SubElement(svg, 'rect', {
+            'x': str(margin),
+            'y': str(legend_y - 8),
+            'width': '12',
+            'height': '10',
+            'class': 'unused-granule'
+        })
+        unused_text = ET.SubElement(svg, 'text', {
+            'x': str(margin + 18),
+            'y': str(legend_y),
+            'class': 'legend'
+        })
+        unused_text.text = 'Unused granule space'
+        
+        legend_y += 25
         
         # Add bottom padding
         legend_y += 40
         
         return ET.tostring(svg, encoding='unicode')
-def load_configuration(config_file: str = "flit_config.json") -> Dict:
-    """Load configuration from JSON file, create default if not exists"""
-    default_config = {
-        "layout": {
-            "flit_size": 256,
-            "header_positions": [0, 64, 128, 192],
-            "granule_size": 20,
-            "num_granules": None
-        },
-        "packet_sizes": [16, 32, 64, 128],
-        "test_packets": [
-            {"size": 32, "packet_id": 1},
-            {"size": 64, "packet_id": 2},
-            {"size": 16, "packet_id": 3},
-            {"size": 128, "packet_id": 4},
-            {"size": 32, "packet_id": 5},
-            {"size": 16, "packet_id": 6}
-        ],
-        "test_distributions": [
-            {
-                "distribution": {"16": 10, "32": 5, "64": 3, "128": 1},
-                "name": "Many Small Packets"
-            },
-            {
-                "distribution": {"16": 2, "32": 2, "64": 2, "128": 4},
-                "name": "Many Large Packets"
-            },
-            {
-                "distribution": {"16": 5, "32": 5, "64": 5, "128": 5},
-                "name": "Balanced Distribution"
-            }
-        ]
-    }
-    
-    if not os.path.exists(config_file):
-        # Create default config file
-        with open(config_file, 'w') as f:
-            json.dump(default_config, f, indent=4)
-        print(f"Created default configuration file: {config_file}")
-        print("You can edit this file to customize layout, packets, and test distributions.")
-    
-    try:
-        with open(config_file, 'r') as f:
-            config = json.load(f)
-        print(f"Loaded configuration from: {config_file}")
-        return config
-    except Exception as e:
-        print(f"Error loading config file {config_file}: {e}")
-        sys.exit(1) 
 
-# Example usage and demonstration
+def write_stats_to_csv(stats, csv_filename):
+    if not stats:
+        return
+    with open(csv_filename, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=stats[0].keys())
+        writer.writeheader()
+        writer.writerows(stats)
+
 def main():
-    # Load configuration from file
-    config = load_configuration("ualink_over_c2c.json")
+    """Main entry point for the flit packing system"""
+    parser = argparse.ArgumentParser(description='Flit Packet Packing System with Header-Meta-Data Support')
+    parser.add_argument('--config', '-c', 
+                       default='flit_config.json',
+                       help='Path to configuration JSON file (default: flit_config.json)')
+    parser.add_argument('--output-prefix', '-o',
+                       default='',
+                       help='Prefix for output SVG files (default: none)')
+    parser.add_argument('--generate-all', '-a',
+                       action='store_true',
+                       help='Generate visualizations for all test distributions')
+    parser.add_argument('--max-flits-visualize', '-m',
+                       type=int,
+                       default=3,
+                       help='Maximum number of flits to visualize per test (default: 3)')
+    parser.add_argument('--csv-stats', type=str, help='Output CSV file for test run statistics')
+    
+    args = parser.parse_args()
+    
+    # Load configuration
+    config = load_configuration(args.config)
     
     # Extract configuration
     layout_config = config["layout"]
-    packet_sizes = config["packet_sizes"]
+    packet_types = config["packet_types"]
     test_packet_configs = config["test_packets"]
     test_distribution_configs = config["test_distributions"]
     
-    # Create flit layout from config
+    # Extract packet sizes
+    packet_sizes = []
+    for packet_type in packet_types.values():
+        total_size = packet_type["header_size"] + packet_type["meta_size"] + packet_type["data_size"]
+        if total_size not in packet_sizes:
+            packet_sizes.append(total_size)
+    packet_sizes.sort()
+    
+    # Create system components
     layout = FlitLayout(
         flit_size=layout_config["flit_size"],
         header_positions=layout_config["header_positions"],
@@ -841,130 +932,188 @@ def main():
         num_granules=layout_config["num_granules"]
     )
     
-    # Create packer
     packer = FlitPacker(layout, packet_sizes)
     
-    print("Flit Packing System with Granules")
+    print("Flit Packing System with Header-Meta-Data Support")
     print("=" * 50)
-    print(f"Configuration loaded from: flit_config.json")
+    print(f"Configuration: {args.config}")
     print(f"Flit size: {layout.flit_size} bytes")
-    print(f"Header positions: {layout.header_positions}")
     print(f"Granule size: {layout.granule_size} bytes")
     print(f"Granules per flit: {layout.num_granules}")
-    print(f"Available data regions: {layout.get_available_positions()}")
-    print(f"Total data capacity per flit: {packer.total_data_capacity} bytes")
-    print(f"Data efficiency: {packer.total_data_capacity/layout.flit_size*100:.1f}%")
-    print(f"Granule capacity per flit: {layout.num_granules * layout.granule_size} bytes")
     print()
     
-    # Create test packets from config
+    # Display packet types
+    print("Packet Types:")
+    for type_key, packet_type in packet_types.items():
+        total_size = packet_type["header_size"] + packet_type["meta_size"] + packet_type["data_size"]
+        print(f"  {type_key}: {packet_type['name']} ({packet_type['header_size']}H + {packet_type['meta_size']}M + {packet_type['data_size']}D = {total_size}B)")
+    print()
+    
+    # Create test packets
     test_packets = []
     for packet_config in test_packet_configs:
-        test_packets.append(Packet(packet_config["size"], packet_config["packet_id"]))
+        packet = create_packet_from_type(
+            packet_config["type"], 
+            packet_types, 
+            packet_config["packet_id"]
+        )
+        test_packets.append(packet)
     
+    # Pack and analyze example test packets
+    print("Analyzing example test packets...")
     flits, granules, stats = packer.pack_packets(test_packets)
     
-    print("Example Packing Results:")
-    print(f"Total packets: {len(test_packets)}")
-    print(f"Total packet bytes: {stats['total_packet_bytes']}")
-    print(f"Flits generated: {stats['total_flits']}")
-    print(f"Full flits analyzed for efficiency: {stats['full_flits_analyzed']}")
-    print(f"Granules generated: {stats['total_granules']}")
-    print(f"Flit efficiency (full flits only): {stats['efficiency']:.2f}%")
-    print(f"Granule efficiency (full flits only): {stats['granule_efficiency']:.2f}%")
-    print(f"Fragmented packets: {stats['fragmented_packets']}")
-    print(f"Total waste bytes: {stats['waste_bytes']}")
-    print(f"Wasted granule bytes: {stats['wasted_granule_bytes']}")
+    print("Example Results:")
+    print(f"  Packets: {len(test_packets)}")
+    print(f"  Flits: {stats['total_flits']}")
+    print(f"  Data Efficiency: {stats['data_efficiency']:.1f}%")
+    print(f"  Overall Efficiency: {stats['overall_efficiency']:.1f}%")
     print()
     
-    # Create visualizer
+    # Create visualizations
     visualizer = FlitVisualizer(layout)
     
-    # Generate basic flit structure SVG
+    def get_filename(base_name: str) -> str:
+        return f"{args.output_prefix}{base_name}" if args.output_prefix else base_name
+    
+    # Generate structure SVG
+    print("Generating visualizations...")
     svg_content = visualizer.create_structure_svg()
-    try:
-        with open('flit_structure.svg', 'w') as f:
-            f.write(svg_content)
-        print("✓ Basic flit structure saved as 'flit_structure.svg'")
-    except Exception as e:
-        print(f"✗ Error saving flit_structure.svg: {e}")
+    structure_file = get_filename('flit_structure.svg')
+    with open(structure_file, 'w') as f:
+        f.write(svg_content)
+    print(f"✓ Structure: {structure_file}")
     
-    # Generate packed example visualization
-    packed_svg = visualizer.create_packed_flits_svg(flits, granules, test_packets, stats, "Example Packing")
-    try:
-        with open('example_packing.svg', 'w') as f:
-            f.write(packed_svg)
-        print("✓ Example packing visualization saved as 'example_packing.svg'")
-    except Exception as e:
-        print(f"✗ Error saving example_packing.svg: {e}")
+    # Generate visualization for example test packets
+    # Limit the number of flits for visualization to keep files manageable
+    flits_to_visualize = flits[:args.max_flits_visualize]
+    granules_to_visualize = granules[:args.max_flits_visualize]
     
-    # Efficiency analysis with visualizations
-    analyzer = PackingAnalyzer(packer)
+    packed_svg = visualizer.create_packed_flits_svg(
+        flits_to_visualize, 
+        granules_to_visualize, 
+        test_packets, 
+        stats, 
+        "Example Test Packets"
+    )
+    example_file = get_filename('example_packing.svg')
+    with open(example_file, 'w') as f:
+        f.write(packed_svg)
+    print(f"✓ Example packing: {example_file}")
     
-    # Convert test distributions from config
-    test_distributions = []
-    for dist_config in test_distribution_configs:
-        # Convert string keys to integers
-        distribution = {int(k): v for k, v in dist_config["distribution"].items()}
-        test_distributions.append((distribution, dist_config["name"]))
+    # Run efficiency analysis and generate visualizations for distributions
+    analyzer = PackingAnalyzer(packer, packet_types)
     
-    print("\nEfficiency Analysis (1000 randomizations each):")
-    print("-" * 80)
+    print("\nRunning efficiency analysis...")
+    for i, dist_config in enumerate(test_distribution_configs, 1):
+        distribution = {}
+        for packet_type_name, count in dist_config["distribution"].items():
+            if packet_type_name in packet_types:
+                packet_type = packet_types[packet_type_name]
+                total_size = packet_type["header_size"] + packet_type["meta_size"] + packet_type["data_size"]
+                distribution[total_size] = count
+        
+        # Run efficiency analysis
+        results = analyzer.analyze_efficiency(distribution, 100)  # Reduced iterations for demo
+        print(f"  Test {i} ({dist_config['name']}): {results['overall_efficiency_mean']:.1f}% overall efficiency")
+        
+        # Generate visualization for this distribution if requested
+        if args.generate_all:
+            print(f"    Generating visualization for {dist_config['name']}...")
+            
+            # Create a single random instance of this distribution for visualization
+            dist_packets = []
+            packet_id = 100 + i * 100  # Start with unique IDs for each distribution
+            
+            for packet_type_name, count in dist_config["distribution"].items():
+                if packet_type_name in packet_types:
+                    for j in range(count):
+                        packet = create_packet_from_type(packet_type_name, packet_types, packet_id)
+                        dist_packets.append(packet)
+                        packet_id += 1
+            
+            # Shuffle for realistic packing scenario
+            random.shuffle(dist_packets)
+            
+            # Pack the packets
+            dist_flits, dist_granules, dist_stats = packer.pack_packets(dist_packets)
+            
+            # Limit visualization to manageable number of flits
+            dist_flits_viz = dist_flits[:args.max_flits_visualize]
+            dist_granules_viz = dist_granules[:args.max_flits_visualize]
+            
+            # Generate packed flits visualization
+            dist_svg = visualizer.create_packed_flits_svg(
+                dist_flits_viz,
+                dist_granules_viz,
+                dist_packets,
+                dist_stats,
+                dist_config['name']
+            )
+            
+            # Save with distribution-specific name
+            dist_filename = dist_config['name'].lower().replace(' ', '_')
+            dist_file = get_filename(f'distribution_{i}_{dist_filename}.svg')
+            with open(dist_file, 'w') as f:
+                f.write(dist_svg)
+            print(f"    ✓ Distribution visualization: {dist_file}")
     
-    for i, (distribution, test_name) in enumerate(test_distributions, 1):
-        total_packets = sum(distribution.values())
-        total_bytes = sum(size * count for size, count in distribution.items())
+    # Generate comparison visualization showing different packet arrangements
+    if args.generate_all:
+        print("\nGenerating packet arrangement comparisons...")
         
-        print(f"\nTest {i}: {test_name}")
-        print(f"Total packets: {total_packets}, Total bytes: {total_bytes}")
+        # Create a worst-case and best-case scenario with the same packets
+        comparison_packets = test_packets[:4]  # Use first 4 packets for comparison
         
-        results = analyzer.analyze_efficiency(distribution, 1000)
+        # Worst case: packets in size order (largest first)
+        worst_case_packets = sorted(comparison_packets, key=lambda p: p.size, reverse=True)
+        worst_flits, worst_granules, worst_stats = packer.pack_packets(worst_case_packets)
         
-        print(f"Efficiency: {results['efficiency_mean']:.2f}% ± {results['efficiency_std']:.2f}%")
-        print(f"Range: {results['efficiency_min']:.2f}% - {results['efficiency_max']:.2f}%")
-        print(f"Granule Efficiency: {results['granule_efficiency_mean']:.2f}% ± {results['granule_efficiency_std']:.2f}%")
-        print(f"Avg flits: {results['flit_count_mean']:.2f} ± {results['flit_count_std']:.2f}")
-        print(f"Fragmentation rate: {results['fragmentation_rate_mean']:.2f}% ± {results['fragmentation_rate_std']:.2f}%")
-        
-        # Generate one example packing for this distribution
-        packets = []
-        packet_id = 0
-        
-        for size, count in distribution.items():
-            for _ in range(count):
-                packets.append(Packet(size, packet_id))
-                packet_id += 1
-        
-        # DON'T shuffle - pack in generation order for visualization
-        
-        # Pack and visualize
-        test_flits, test_granules, test_stats = packer.pack_packets(packets)
-        
-        # Create visualization for this test
-        test_svg = visualizer.create_packed_flits_svg(
-            test_flits, test_granules, packets, test_stats, f"Test {i}: {test_name}"
+        worst_svg = visualizer.create_packed_flits_svg(
+            worst_flits[:args.max_flits_visualize],
+            worst_granules[:args.max_flits_visualize],
+            worst_case_packets,
+            worst_stats,
+            "Worst Case (Largest First)"
         )
+        worst_file = get_filename('worst_case_packing.svg')
+        with open(worst_file, 'w') as f:
+            f.write(worst_svg)
+        print(f"✓ Worst case packing: {worst_file}")
         
-        filename = f'test_{i}_packing.svg'
-        try:
-            with open(filename, 'w') as f:
-                f.write(test_svg)
-            print(f"✓ Visualization saved as '{filename}'")
-        except Exception as e:
-            print(f"✗ Error saving {filename}: {e}")
+        # Best case: packets in optimal order (smallest first)
+        best_case_packets = sorted(comparison_packets, key=lambda p: p.size)
+        best_flits, best_granules, best_stats = packer.pack_packets(best_case_packets)
+        
+        best_svg = visualizer.create_packed_flits_svg(
+            best_flits[:args.max_flits_visualize],
+            best_granules[:args.max_flits_visualize],
+            best_case_packets,
+            best_stats,
+            "Best Case (Smallest First)"
+        )
+        best_file = get_filename('best_case_packing.svg')
+        with open(best_file, 'w') as f:
+            f.write(best_svg)
+        print(f"✓ Best case packing: {best_file}")
+        
+        print(f"\nEfficiency comparison:")
+        print(f"  Worst case (largest first): {worst_stats['overall_efficiency']:.1f}%")
+        print(f"  Best case (smallest first): {best_stats['overall_efficiency']:.1f}%")
+        print(f"  Difference: {best_stats['overall_efficiency'] - worst_stats['overall_efficiency']:.1f} percentage points")
     
-    print(f"\n" + "="*60)
-    print("SVG FILES GENERATED:")
-    print("="*60)
-    print("✓ flit_structure.svg: Basic flit layout showing headers and granule regions")
-    print("✓ example_packing.svg: Example packet packing demonstration")
-    print("✓ test_1_packing.svg: Many small packets test visualization")
-    print("✓ test_2_packing.svg: Many large packets test visualization") 
-    print("✓ test_3_packing.svg: Balanced distribution test visualization")
-    print("="*60)
-    print("All files saved in the current working directory.")
-    print("Open any SVG file in a web browser to view the visualization.")
-    print(f"\nTo customize configuration, edit 'flit_config.json' and re-run the script.")
+    print(f"\nVisualization Summary:")
+    print(f"  Files saved with prefix: '{args.output_prefix}'")
+    if not args.generate_all:
+        print(f"  Use --generate-all (-a) to create visualizations for all test distributions")
+    print(f"  Use --max-flits-visualize (-m) to control how many flits are visualized")
+    print("  Run with --help for more options")
+    
+    # Assume test run statistics are collected in a list of dicts called test_stats
+    # test_stats = [...]  # ...existing code...
+
+    if args.csv_stats:
+        write_stats_to_csv([worst_stats], args.csv_stats)
 
 if __name__ == "__main__":
     main()
