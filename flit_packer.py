@@ -71,15 +71,11 @@ class FlitPacker:
         """Pack packets into granules and flits with header/meta/data separation"""
         flits = []
         all_granules = []
-        
-        # Create initial set of granules for first flit
         current_flit, current_granules = self._start_new_flit()
-        
         total_packet_bytes = sum(p.size for p in packets)
         packed_bytes = 0
         fragmented_packets = 0
         wasted_granule_bytes = 0
-        
         stats = {
             'total_flits': 0,
             'total_granules': 0,
@@ -92,161 +88,75 @@ class FlitPacker:
             'wasted_granule_bytes': 0,
             'full_flits_analyzed': 0
         }
-        
+
         for packet in packets:
-            # Pack header, meta, data (must be in consecutive granules)
-            remaining_header_size = packet.header_size if hasattr(packet, 'header_size') else 0
-            remaining_meta_size = packet.meta_size if hasattr(packet, 'meta_size') else 0
-            remaining_data_size = packet.data_size if hasattr(packet, 'data_size') else packet.size
+            remaining_header_size = getattr(packet, 'header_size', 0)
+            remaining_meta_size = getattr(packet, 'meta_size', 0)
+            remaining_data_size = getattr(packet, 'data_size', packet.size)
             packet_fragmented = False
-            
-            # Find available consecutive granules (header + meta + data)
-            header_granule_idx = None
-            meta_granule_idx = None
-            data_granule_idx = None
-            
-            # Determine how many consecutive granules we need
-            granules_needed = 0
-            if remaining_header_size > 0:
-                granules_needed += 1
-            if remaining_meta_size > 0:
-                granules_needed += 1
-            if remaining_data_size > 0:
-                granules_needed += 1
-            
-            # Look for available consecutive granules
-            if granules_needed > 0:
-                for i in range(len(current_granules) - granules_needed + 1):
-                    # Check if we have enough consecutive available granules
-                    available_consecutive = True
-                    for j in range(granules_needed):
-                        if current_granules[i + j].packet_id is not None:
-                            available_consecutive = False
+
+            # --- Pack header (may span multiple granules) ---
+            while remaining_header_size > 0:
+                granule_found = False
+                for granule in current_granules:
+                    if granule.packet_id is None and granule.granule_type == "data":
+                        granule.granule_type = "header"
+                    if granule.packet_id is None and granule.granule_type == "header":
+                        bytes_added = granule.add_packet_data(packet, remaining_header_size, "header")
+                        if bytes_added > 0:
+                            remaining_header_size -= bytes_added
+                            packed_bytes += bytes_added
+                            granule_found = True
                             break
-                    
-                    if available_consecutive:
-                        # Check size constraints
-                        valid_sizes = True
-                        granule_idx = i
-                        
-                        if remaining_header_size > 0:
-                            if current_granules[granule_idx].size < remaining_header_size:
-                                valid_sizes = False
-                            else:
-                                header_granule_idx = granule_idx
-                                granule_idx += 1
-                        
-                        if remaining_meta_size > 0 and valid_sizes:
-                            if current_granules[granule_idx].size < remaining_meta_size:
-                                valid_sizes = False
-                            else:
-                                meta_granule_idx = granule_idx
-                                granule_idx += 1
-                        
-                        if remaining_data_size > 0 and valid_sizes:
-                            data_granule_idx = granule_idx
-                        
-                        if valid_sizes:
-                            # Set granule types
-                            if header_granule_idx is not None:
-                                current_granules[header_granule_idx].granule_type = "header"
-                            if meta_granule_idx is not None:
-                                current_granules[meta_granule_idx].granule_type = "meta"
-                            if data_granule_idx is not None:
-                                current_granules[data_granule_idx].granule_type = "data"
-                            break
-                        else:
-                            # Reset for next iteration
-                            header_granule_idx = None
-                            meta_granule_idx = None
-                            data_granule_idx = None
-                
-                # If no consecutive granules found, need new flit
-                if (remaining_header_size > 0 and header_granule_idx is None) or \
-                   (remaining_meta_size > 0 and meta_granule_idx is None) or \
-                   (remaining_data_size > 0 and data_granule_idx is None):
-                    
+                if not granule_found:
                     self._finish_current_flit(current_flit, current_granules, flits, all_granules)
                     wasted_granule_bytes += sum(g.size - g.bytes_used for g in current_granules)
-                    
-                    # Start new flit
                     current_flit, current_granules = self._start_new_flit()
-                    
-                    # Use first granules for header + meta + data
-                    if len(current_granules) >= granules_needed:
-                        granule_idx = 0
-                        if remaining_header_size > 0:
-                            current_granules[granule_idx].granule_type = "header"
-                            header_granule_idx = granule_idx
-                            granule_idx += 1
-                        if remaining_meta_size > 0:
-                            current_granules[granule_idx].granule_type = "meta"
-                            meta_granule_idx = granule_idx
-                            granule_idx += 1
-                        if remaining_data_size > 0:
-                            current_granules[granule_idx].granule_type = "data"
-                            data_granule_idx = granule_idx
-                        
-                        packet_fragmented = True
-            
-            # Pack header if present
-            if remaining_header_size > 0 and header_granule_idx is not None:
-                header_granule = current_granules[header_granule_idx]
-                bytes_added = header_granule.add_packet_data(packet, remaining_header_size, "header")
-                remaining_header_size -= bytes_added
-                packed_bytes += bytes_added
-                
-                if remaining_header_size > 0:
-                    print(f"Warning: Packet {packet.packet_id} header ({packet.header_size}B) too large for granule ({self.granule_size}B)")
-            
-            # Pack metadata if present
-            if remaining_meta_size > 0 and meta_granule_idx is not None:
-                meta_granule = current_granules[meta_granule_idx]
-                bytes_added = meta_granule.add_packet_data(packet, remaining_meta_size, "meta")
-                remaining_meta_size -= bytes_added
-                packed_bytes += bytes_added
-                
-                if remaining_meta_size > 0:
-                    print(f"Warning: Packet {packet.packet_id} metadata ({packet.meta_size}B) too large for granule ({self.granule_size}B)")
-            
-            # Pack data
-            while remaining_data_size > 0:
-                if data_granule_idx is not None and data_granule_idx < len(current_granules):
-                    data_granule = current_granules[data_granule_idx]
-                    bytes_added = data_granule.add_packet_data(packet, remaining_data_size, "data")
-                    remaining_data_size -= bytes_added
-                    packed_bytes += bytes_added
-                
-                # If more data remains, look for next available data granule
-                if remaining_data_size > 0:
-                    next_data_granule_idx = None
-                    for i in range(data_granule_idx + 1, len(current_granules)):
-                        granule = current_granules[i]
-                        if granule.packet_id is None:
-                            granule.granule_type = "data"
-                            next_data_granule_idx = i
+                    packet_fragmented = True
+
+            # --- Pack meta (may span multiple granules) ---
+            while remaining_meta_size > 0:
+                granule_found = False
+                for granule in current_granules:
+                    if granule.packet_id is None and granule.granule_type == "data":
+                        granule.granule_type = "meta"
+                    if granule.packet_id is None and granule.granule_type == "meta":
+                        bytes_added = granule.add_packet_data(packet, remaining_meta_size, "meta")
+                        if bytes_added > 0:
+                            remaining_meta_size -= bytes_added
+                            packed_bytes += bytes_added
+                            granule_found = True
                             break
-                    
-                    if next_data_granule_idx is not None:
-                        data_granule_idx = next_data_granule_idx
-                    else:
-                        # Need new flit for remaining data
-                        self._finish_current_flit(current_flit, current_granules, flits, all_granules)
-                        wasted_granule_bytes += sum(g.size - g.bytes_used for g in current_granules)
-                        
-                        current_flit, current_granules = self._start_new_flit()
-                        current_granules[0].granule_type = "data"
-                        data_granule_idx = 0
-                        packet_fragmented = True
-            
+                if not granule_found:
+                    self._finish_current_flit(current_flit, current_granules, flits, all_granules)
+                    wasted_granule_bytes += sum(g.size - g.bytes_used for g in current_granules)
+                    current_flit, current_granules = self._start_new_flit()
+                    packet_fragmented = True
+
+            # --- Pack data (may span multiple granules) ---
+            while remaining_data_size > 0:
+                granule_found = False
+                for granule in current_granules:
+                    if granule.packet_id is None and granule.granule_type == "data":
+                        bytes_added = granule.add_packet_data(packet, remaining_data_size, "data")
+                        if bytes_added > 0:
+                            remaining_data_size -= bytes_added
+                            packed_bytes += bytes_added
+                            granule_found = True
+                            break
+                if not granule_found:
+                    self._finish_current_flit(current_flit, current_granules, flits, all_granules)
+                    wasted_granule_bytes += sum(g.size - g.bytes_used for g in current_granules)
+                    current_flit, current_granules = self._start_new_flit()
+                    packet_fragmented = True
+
             if packet_fragmented:
                 fragmented_packets += 1
-        
+
         # Handle the last flit if it has data
         if any(g.bytes_used > 0 for g in current_granules):
             for granule in current_granules:
                 wasted_granule_bytes += granule.size - granule.bytes_used
-            
             self._finish_current_flit(current_flit, current_granules, flits, all_granules)
         
         # Calculate statistics

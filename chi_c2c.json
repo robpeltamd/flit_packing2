@@ -1,0 +1,162 @@
+{
+    // ARM C2C Format X
+    "layout": {
+        "flit_size": 256,
+        "header_positions": [0, 1, 62,63,64,65, 126,127,128,129, 190,191,192,193,254,255],
+        "granule_size": 20,
+        "num_granules": null
+    },
+    "packet_types": {
+        "ReqS": {
+            "name": "ReqS",
+            "header_size": 20,
+            "meta_size": 8,
+            "data_size": 0
+        },
+        "ReqL": {
+            "name": "ReqL",
+            "header_size": 26,
+            "meta_size": 8,
+            "data_size": 0
+        },
+        "Resp": {
+            "name": "Resp",
+            "header_size": 9,
+            "meta_size": 8,
+            "data_size": 0
+        },
+        "Resp2": {
+            "name": "Resp2",
+            "header_size": 18,
+            "meta_size": 8,
+            "data_size": 128
+        },
+        "DataS": {
+            "name": "DataS",
+            "header_size": 79,
+            "meta_size": 8,
+            "data_size": 0
+        },
+        "DataL": {
+            "name": "DataL",
+            "header_size": 90,
+            "meta_size": 8,
+            "data_size": 0
+        },    
+        "WrReqDataS": {
+            "name": "WrReqDataS",
+            "header_size": 80,
+            "meta_size": 8,
+            "data_size": 0
+        },    
+        "WrReqDataL": {
+            "name": "WrReqDataL",
+            "header_size": 100,
+            "meta_size": 8,
+            "data_size": 0
+        }      
+    
+    
+    },
+    "test_packets": [
+        {
+            "type": "ReqS",
+            "packet_id": 1
+        },
+        {
+            "type": "ReqL",
+            "packet_id": 2
+        },
+        {
+            "type": "Resp",
+            "packet_id": 3
+        },
+        {
+            "type": "Resp2",
+            "packet_id": 4
+        },
+        {
+            "type": "DataS",
+            "packet_id": 5
+        },
+        {
+            "type": "DataL",
+            "packet_id": 6
+        },
+        {
+            "type": "WrReqDataS",
+            "packet_id": 7
+        },
+        {
+            "type": "WrReqDataL",
+            "packet_id": 8
+        }],
+    "test_distributions": [
+        {
+            "distribution": {
+                "ReqS": 0,
+                "ReqL": 0,
+                "Resp": 0,
+                "Resp2": 0,
+                "DataS": 0,
+                "DataL": 0,
+                "WrReqDataS": 30,
+                "WrReqDataL": 0
+            },
+            "name": "All Write push (WrReqDataS)"
+        },
+        {
+            "distribution": {
+                "ReqS": 0,
+                "ReqL": 0,
+                "Resp": 0,
+                "Resp2": 0,
+                "DataS": 0,
+                "DataL": 0,
+                "WrReqDataS": 30,
+                "WrReqDataL": 0
+            },
+            "name": "All Write push (WrReqDataL)"
+        },
+        {
+            "distribution": {
+                "ReqS": 0,
+                "ReqL": 0,
+                "Resp": 0,
+                "Resp2": 0,
+                "DataS": 0,
+                "DataL": 0,
+                "WrReqDataS": 15,
+                "WrReqDataL": 15
+            },
+            "name": "Mixed write push (WrReqDataS, WrReqDataL)"
+        },
+        {
+            "distribution": {
+                "ReqS": 50,
+                "ReqL": 50,
+                "Resp": 0,
+                "Resp2": 0,
+                "DataS": 15,
+                "DataL": 0,
+                "WrReqDataS": 15,
+                "WrReqDataL": 0
+            },
+            "name": "Mixed Read and Write request and respon (WrReqDataS, Resp2)"
+        },
+        {
+            "distribution": {
+                "ReqS": 10,
+                "ReqL": 10,
+                "Resp": 10,
+                "Resp2": 10,
+                "DataS": 10,
+                "DataL": 10,
+                "WrReqDataS": 10,
+                "WrReqDataL": 1
+            },
+            "name": "All evenly distributed packets"
+        }
+
+    ]
+}

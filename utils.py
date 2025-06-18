@@ -1,8 +1,16 @@
 import os
 import json
 import sys
+import re
 from typing import Dict
 from packet import Packet
+
+def strip_json_comments(text: str) -> str:
+    # Remove // line comments
+    text = re.sub(r'//.*', '', text)
+    # Remove /* block comments */
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+    return text
 
 def load_configuration(config_file: str = "flit_config.json") -> Dict:
     default_config = {
@@ -72,7 +80,9 @@ def load_configuration(config_file: str = "flit_config.json") -> Dict:
             sys.exit(1)
     try:
         with open(config_file, 'r') as f:
-            config = json.load(f)
+            raw = f.read()
+            raw = strip_json_comments(raw)
+            config = json.loads(raw)
         print(f"Loaded configuration from: {config_file}")
         return config
     except json.JSONDecodeError as e:
